@@ -119,7 +119,7 @@ static SPIRC_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug)]
 enum SpircCommand {
-    Restore(Arc<PlaybackSnapshot>),
+    Restore(Arc<PlaybackSnapshot>, u32),
     Play,
     PlayPause,
     Pause,
@@ -169,6 +169,16 @@ pub struct PlaybackSnapshot {
 }
 
 impl PlaybackSnapshot {
+    /// Where playback stood when the session dropped.
+    pub fn position_ms(&self) -> u32 {
+        self.position_ms
+    }
+
+    /// Whether it was playing, as opposed to paused.
+    pub fn playing(&self) -> bool {
+        self.playing
+    }
+
     fn restore_into(
         &self,
         username: &str,
@@ -209,7 +219,18 @@ impl Spirc {
     /// Restore a disconnected session on this device, retaining queue order.
     /// New playback already active on this device takes precedence.
     pub fn restore_playback(&self, snapshot: Arc<PlaybackSnapshot>) -> Result<(), Error> {
-        Ok(self.commands.send(SpircCommand::Restore(snapshot))?)
+        let position_ms = snapshot.position_ms;
+        self.restore_playback_at(snapshot, position_ms)
+    }
+
+    /// Restore a disconnected session at `position_ms` instead of where it
+    /// stood when the session dropped, for a player that kept playing since.
+    pub fn restore_playback_at(
+        &self,
+        snapshot: Arc<PlaybackSnapshot>,
+        position_ms: u32,
+    ) -> Result<(), Error> {
+        Ok(self.commands.send(SpircCommand::Restore(snapshot, position_ms))?)
     }
 
     /// Initializes a new spotify connect device
@@ -817,7 +838,7 @@ impl SpircTask {
             SpircCommand::Transfer(..) | SpircCommand::Activate => {
                 warn!("SpircCommand::{cmd:?} will be ignored while already active")
             }
-            SpircCommand::Restore(snapshot) => {
+            SpircCommand::Restore(snapshot, position_ms) => {
                 if self.connect_state.is_active()
                     && !matches!(self.play_status, SpircPlayStatus::Stopped)
                 {
@@ -829,7 +850,7 @@ impl SpircTask {
                     &mut self.context_resolver,
                 )?;
                 self.handle_activate();
-                self.load_track(snapshot.playing, snapshot.position_ms)?;
+                self.load_track(snapshot.playing, position_ms)?;
             }
             // A volume set while the device is inactive is still its volume:
             // `set_volume` records it in the device state and the mixer and
