@@ -245,7 +245,18 @@ impl ContextResolver {
                     recent_track_uri: recent_track_uri(),
                     ..Default::default()
                 };
-                self.session.spclient().get_autoplay_context(&request).await
+                match self.session.spclient().get_autoplay_context(&request).await {
+                    Ok(context) => Ok(context),
+                    // Spotify's autoplay endpoint answers 400 for some accounts and
+                    // regions; the radio station of the same context still resolves.
+                    Err(why) => match station_uri(resolve_uri) {
+                        Some(station) => {
+                            warn!("autoplay for {resolve_uri} failed ({why}), using {station}");
+                            self.session.spclient().get_context(&station).await
+                        }
+                        None => Err(why),
+                    },
+                }
             }
         }
     }
@@ -351,5 +362,31 @@ impl ContextResolver {
         state.update_queue_revision();
 
         true
+    }
+}
+
+/// The radio station of a track, playlist, album or artist URI.
+fn station_uri(uri: &str) -> Option<String> {
+    let mut parts = uri.split(':');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some("spotify"), Some(kind @ ("track" | "playlist" | "album" | "artist")), Some(id), None) => {
+            Some(format!("spotify:station:{kind}:{id}"))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod station_tests {
+    use super::station_uri;
+
+    #[test]
+    fn station_of_a_context_uri() {
+        assert_eq!(
+            station_uri("spotify:playlist:abc").as_deref(),
+            Some("spotify:station:playlist:abc")
+        );
+        assert_eq!(station_uri("spotify:show:abc"), None);
+        assert_eq!(station_uri("spotify:user:me:collection"), None);
     }
 }
